@@ -1,0 +1,186 @@
+---
+title: "Project 2"
+author: "Group Members' Names"
+date: "Date"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+require("knitr")
+datadir <- "C:/Users/Blake Zimbardi/Desktop/r/working"
+sourcedir <- "C:/Users/Blake Zimbardi/Desktop/r/source"
+opts_knit$set(root.dir = sourcedir)
+library(forecast)
+library(mtsdi)
+library(MTS)
+library(here)
+library(dplyr)
+library(ggplot2)
+library(ggpubr)
+library(ggfortify)
+library(MASS)
+library(lindia)
+library(olsrr)
+library(car)
+library(data.table)
+# library(MASS)
+library(ggplot2)
+library(ggpubr)
+library(psych)
+library(ggResidpanel)
+# library(forecast)
+library(tidyverse)
+library(lubridate)
+```
+
+# Load data and impute missing values
+```{r cars}
+setwd(datadir)
+
+airquality = read.csv('AirQualityUCI.csv')
+
+# replace -200 with NA
+airquality[airquality == -200] <- NA
+
+# convert integer type to numeric
+intcols = c(4,5,7,8,9,10,11,12)
+for(i in 1:length(intcols)){
+  airquality[,intcols[i]] <- as.numeric(airquality[,intcols[i]])
+}
+
+setwd(sourcedir)
+
+# create new data frame with just CO and NO2
+AQdata = airquality[,c(3,10)]
+
+# impute missing air quality data
+f <- ~ CO.GT. + NO2.GT.
+t <- c(seq(1,dim(AQdata)[1],1))
+i <- mnimput(f, AQdata, eps=1e-3, ts=TRUE, method='gam', ga.control=list(formula=paste(names(AQdata)[c(1:2)],'~ns(t,2)')))
+
+# set airquality to imputed data
+AQdata <- i$filled.dataset
+
+# aggregate to daily maxima for model building
+dailyAQ <- aggregate(AQdata, by=list(as.Date(airquality[,1],"%m/%d/%Y")), FUN=max)
+```
+
+```{r Plot Time Series}
+##use the ts() command to get a time series of daily co amount using daily co data from all days
+CO.ts<-ts(dailyAQ$CO.GT)
+
+##Plot the time series you created for daily co, CO.ts
+CO = data.frame(time=dailyAQ$Group.1, conc=dailyAQ$CO.GT.)
+CO$month = month(as.yearmon(CO$time))
+CO.trendseason <- lm(conc ~ time + as.factor(month), data = CO)
+ggplot(CO, aes(x=time,y=conc)) + geom_line() + ggtitle("Daily Maximum Carbon Monoxide Concentration over a Year") + ylab("Maximum Daily CO") + xlab("Date") + geom_line(aes(x=time,y=CO.trendseason$fitted.values), color="blue") + stat_smooth(method="lm",col="red")
+```
+
+# 1(a)
+First, we plot the daily maximum carbon monoxide concentration as a univariate time series. We establish a red trend line for the entire dataset and see that across the entire data set, the daily maximum carbon monoxide concentration increases. Likewise, there is a yearly peak in daily maximum carbon monoxide concentration during December, corresponding to the holiday season. In fact, it appears that daily maximum carbon monoxide concentrations occur during holiday seasons (the highest travel period in the year), shown with the blue trend line. 
+#
+
+```{r Plot Periodogram}
+pg.CO <- spec.pgram(CO.ts,spans=9,demean=T,log='no')
+spec.CO <- data.frame(freq=pg.CO$freq, spec=pg.CO$spec)
+
+ggplot(spec.CO) + geom_line(aes(x=freq,y=spec)) + 
+  ggtitle("Smooth Periodogram of Daily Maximum Carbon Monoxide Concentration")
+# Find the peak, max.omega.precip
+max.omega.CO<-pg.CO$freq[which(pg.CO$spec==max(pg.CO$spec))]
+
+# Where is the peak?
+max.omega.CO
+
+# What is the period?
+1/max.omega.CO
+
+sorted.spec <- sort(pg.CO$spec, decreasing=T, index.return=T)
+names(sorted.spec)
+
+# corresponding periods (omegas = frequences, Ts = periods)
+sorted.omegas <- pg.CO$freq[sorted.spec$ix]
+sorted.Ts <- 1/pg.CO$freq[sorted.spec$ix]
+
+# look at first 20
+sorted.omegas[1:20]
+sorted.Ts[1:20]
+```
+
+# 1(b)
+Looking at the Periodogram, we see a maximum seasonal component at low frequencies/high periods. That data corresponds with high autocorrelation and is also known as "red noise", which is typically modeled through autoregressive models instead of through seasons. Considering that, there are also local peaks at ~7 day period (suggesting there is a weekly season peak (likely on the weekends)) and ~28 day period (suggesting there is a monthly seasonal peak (likely on monthly holidays)). 
+#
+
+```{r Confirming Stationary Time Series and Appropriate Models}
+# Model seasonality
+t <- c(seq(1,dim(CO)[1]))
+CO.trend.seasonal <- lm(CO.ts ~ t + sin(2*pi*t/12) + cos(2*pi*t/12))
+summary(CO.trend.seasonal)
+
+# Get the residuals from the CO.trend.seasonal model above and store in e.ts.CO:
+e.ts.CO <- ts(CO.trend.seasonal$residuals)
+    
+# Plot the residuals for the CO.trend model
+autoplot(e.ts.CO)
+    
+# Plot the autocorrelation (ACF) of the residuals of temp.trend.seasonal
+CO.acf <- ggAcf(e.ts.CO)
+# CO.acf
+
+# Plot the partial autocorrelation (PACF) of the residuals temp.trend.seasonal
+CO.pacf <- ggPacf(e.ts.CO)
+# CO.pacf  
+
+# Plot acf and pacf side by side for easier examination
+ggarrange(CO.acf,CO.pacf,nrow=2,ncol=1)
+```
+# 1(c)
+We observe from the plot of residuals from our time series and ACF that our data is stationary, so we can proceed with choosing the appropriate model (AR, MA, or ARMA). We plot ACF and PACF graphs and observe that there is significant lags at various lags, but since there is sinusodial decay, we choose only the first few significant lags (1, 2, 3, 6, 7, 8) to model. Likewise, there are 3 significant lags in PACF (1, 6, 13), so, we determine that there an Autoregressive Moving Average (AR) model is most appropriate since there are both autoregressive and moving average components. We build and compare ARMA models for the most extreme cases of p = [1 3] and q = [1] and then automatically select an Autoregressive Integrated Moving Average (ARIMA) model for comparison.
+#
+
+``` {r Building ARMA and ARIMA Models}
+#arma(1,1), p = 1, q = 1
+CO.arma11 <- arma(e.ts.CO, order=c(1,1), include.intercept=FALSE)
+summary(CO.arma11)
+
+CO.arma11.resid.acf <- ggAcf(CO.arma11$residuals)
+CO.arma11.resid.pacf <- ggPacf(CO.arma11$residuals)
+ggarrange(CO.arma11.resid.acf,CO.arma11.resid.pacf,nrow=2,ncol=1)
+
+CO.arma11.resid.fitted = ggplot() + geom_point(aes(x=fitted(CO.arma11), y=CO.arma11$residuals)) + ggtitle("ARMA(3,1) Fitted vs. Residuals")
+CO.arma11.resid.qq = qplot(sample=CO.arma11$residuals) + stat_qq_line(color="red") + ggtitle("QQ Plot ARMA(3,1) Fitted vs. Residuals")
+ggarrange(CO.arma11.resid.fitted, CO.arma11.resid.qq,ncol=2, nrow=1)
+#arma(3,1), p = 3, q = 1
+CO.arma31 <- arma(e.ts.CO, order=c(3,1), include.intercept=FALSE)
+summary(CO.arma31)
+
+CO.arma31.resid.acf <- ggAcf(CO.arma31$residuals)
+CO.arma31.resid.pacf <- ggPacf(CO.arma31$residuals)
+ggarrange(CO.arma31.resid.acf,CO.arma31.resid.pacf,nrow=2,ncol=1)
+
+CO.arma31.resid.fitted = ggplot() + geom_point(aes(x=fitted(CO.arma31), y=CO.arma31$residuals)) + ggtitle("ARMA(3,1) Fitted vs. Residuals")
+CO.arma31.resid.qq = qplot(sample=CO.arma31$residuals) + stat_qq_line(color="red") + ggtitle("QQ Plot ARMA(3,1) Fitted vs. Residuals")
+ggarrange(CO.arma31.resid.fitted, CO.arma31.resid.qq,ncol=2, nrow=1)
+
+#arima
+CO.auto <- auto.arima(e.ts.CO, approximation=FALSE)
+summary(CO.auto)
+
+CO.auto.resid.acf <- ggAcf(CO.auto$residuals)
+CO.auto.resid.pacf <- ggPacf(CO.auto$residuals)
+ggarrange(CO.auto.resid.acf,CO.auto.resid.pacf,nrow=2,ncol=1)
+
+CO.auto.resid.fitted = ggplot() + geom_point(aes(x=fitted(CO.auto), y=CO.auto$residuals)) + ggtitle("ARIMA Fitted vs. Residuals")
+CO.auto.resid.qq = qplot(sample=CO.auto$residuals) + stat_qq_line(color="red") + ggtitle("QQ Plot ARIMA Fitted vs. Residuals")
+ggarrange(CO.auto.resid.fitted, CO.auto.resid.qq,ncol=2, nrow=1)
+ggtsdiag(CO.auto)
+
+```
+# 1(d), 1(e)
+To assess our models, we evaluate the best model between ARMA(1,1), ARMA(3,1), and our automatically selected ARIMA(4,0,3) based off the lowest AIC and judgement from their diagnostic plots. We see that ARIMA (4,0,3) performs the best as it has the lowest AIC = 1474.08, followed by ARMA(3,1) AIC = 1480.94 and ARMA(1,1) AIC = 1489.55. From the ACF and PACF graphs, we again see the best performance from the ARIMA(4,0,3) model as it has the least significant lags in magnitude of lag despite magnitude of lag being relatively similar between ARIMA(4,0,3) and ARMA(3,1) (ARMA(1,1) is also low, but still almost double the highest magnitude of the lag from ARIMA(4,0,3).). Despite the ARMA(3,1) model performing better in lag location than ARIMA(4,0,3) (at ACF = 5 and PACF = 5 vs. ACF = 4 and PACF = 4, respectively), we still choose the ARIMA(4,0,3) as the best model for modeling daily maximum carbon monoxide concentrations. We further confirm this based off the residual diagnostic plots for residuals, since p > 0.05 for 3 lags (from the Ljung-Box statistic) hence it is adequate for our model.
+
+There are still issues from our diagnostic plots, however. All of the residuals plots indicate non-linearity (suggesting the predictor should be changed) and each QQ-plot exhibits heavy two-tail failure, showing the whole distribution is non-gaussian. 
+#
+
