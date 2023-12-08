@@ -1,0 +1,189 @@
+---
+title: "Project 2"
+author: "Group Members' Names"
+date: "Date"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+require("knitr")
+datadir <- "/Users/mitchellwhalen/Library/CloudStorage/GoogleDrive-maw9byk@virginia.edu/My Drive/UVA Fall 2023/Statistical Modeling/HW/AirQualityUCI"
+sourcedir <- "/Users/mitchellwhalen/Library/CloudStorage/GoogleDrive-maw9byk@virginia.edu/My Drive/UVA Fall 2023/Statistical Modeling/In Class/R Code"
+opts_knit$set(root.dir = sourcedir)
+library(mtsdi)
+library(MTS)
+library(forecast)
+library(ggplot2)
+library(lubridate)
+library(ggfortify)
+library(ggpubr)
+library(tseries)
+library(tidyverse)
+```
+
+# Load data and impute missing values
+```{r cars}
+setwd(datadir)
+
+airquality = read.csv('AirQualityUCI.csv')
+
+# replace -200 with NA
+airquality[airquality == -200] <- NA
+
+# convert integer type to numeric
+intcols = c(4,5,7,8,9,10,11,12)
+for(i in 1:length(intcols)){
+  airquality[,intcols[i]] <- as.numeric(airquality[,intcols[i]])
+}
+
+setwd(sourcedir)
+
+# create new data frame with just CO and NO2
+AQdata = airquality[,c(3,10)]
+
+# impute missing air quality data
+f <- ~ CO.GT. + NO2.GT.
+t <- c(seq(1,dim(AQdata)[1],1))
+i <- mnimput(f, AQdata, eps=1e-3, ts=TRUE, method='gam', ga.control=list(formula=paste(names(AQdata)[c(1:2)],'~ns(t,2)')))
+
+# set airquality to imputed data
+AQdata <- i$filled.dataset
+
+# aggregate to daily maxima for model building
+dailyAQ <- aggregate(AQdata, by=list(as.Date(airquality[,1],"%m/%d/%Y")), FUN=max)
+
+# renaming variables
+dailyAQ$CO <- dailyAQ$CO.GT.
+dailyAQ$NO2 <- dailyAQ$NO2.GT.
+```
+
+#### Creating Time Series
+```{r}
+# Create time series of daily CO & NO2
+CO_AQ <- dailyAQ$CO.GT.
+NO2_AQ <- dailyAQ$NO2.GT.
+
+##Use the ts() command to get a time series of CO_AQ & NO2_AQ
+CO.ts<-ts(CO_AQ)
+NO2.ts<-ts(NO2_AQ)
+```
+
+#### Modeling Trend
+```{r}
+# Create a time index
+time.air <- c(1:(length(CO.ts)))
+
+# Create linear model
+CO.lm <- lm(CO.ts[time.air] ~ time.air)
+summary(CO.lm)
+ggplot(dailyAQ, aes(x = time.air, y = CO)) +
+  geom_line() +
+  geom_smooth(method = "lm", col = "red", se = FALSE) +
+  labs(x = "Time", y = "CO Values", title = "CO Time Series with Fitted Trend")
+
+NO2.lm <- lm(NO2.ts[time.air] ~ time.air)
+summary(NO2.lm)
+ggplot(dailyAQ, aes(x = time.air, y = NO2)) +
+  geom_line() +
+  geom_smooth(method = "lm", col = "red", se = FALSE) +
+  labs(x = "Time", y = "NO2 Values", title = "NO2 Time Series with Fitted Trend")
+
+```
+We can see a significant positive trend with both variables (especially NO2). In both models we used "time.air" or the time to predict the value. For the CO model we got a p-value of 0.003 and an adjusted R^2 of 0.020. For the NO2 model we got a p-value of < 2.2e-16 and an adjusted R^2 0.300.
+
+#### Modeling Seasonality
+```{r}
+# Periodograms
+spec.pgram(CO.ts,spans=9,demean=T,log='no')
+spec.pgram(NO2.ts,spans=9,demean=T,log='no')
+
+```
+We can see in the periodograms there does not appear to be a strong seasonal component in either time series, however there are some small peak, so we will explore modeling the seasonality with sin & cos. We will also include the trend since we have established it as a significant predictor.
+```{r}
+# Seasonal models for CO and NO2
+CO_season.lm <- lm(CO.ts[time.air] ~ time.air + sin(2*pi*time.air/12) + cos(2*pi*time.air/12))
+summary(CO_season.lm)
+ggplot(dailyAQ, aes(x=time.air,y=CO)) + geom_line() + 
+  geom_line(aes(x=time.air,y=CO_season.lm$fitted.values),color="red") +
+  xlab("Time") + ylab("CO Values")
+
+NO2_season.lm <- lm(NO2.ts[time.air] ~ time.air + sin(2*pi*time.air/12) + cos(2*pi*time.air/12))
+summary(NO2_season.lm)
+ggplot(dailyAQ, aes(x=time.air,y=NO2)) + geom_line() + 
+  geom_line(aes(x=time.air,y=NO2_season.lm$fitted.values),color="red") +
+  xlab("Time") + ylab("NO2 Values")
+```
+We can see that adding a seasonal component does not improve the efficacy of our model. In both models the trend proved to be significant, but neither the sin nor cos component was significant. For the CO model we got a p-value of 0.011 and an adjusted R^2 of 0.021. For the NO2 model we got a p-value of < 2.2e-16 and an adjusted R^2 0.300. The p-values got lower using the seasonal model, whiel the adjusted R^2 remained essentially the same, so we will proceed just using the trend models.
+
+#### Modeling Auto-Regressive and Moving Average Components
+```{r, include=F}
+# Build arima models to residuals to CO.lm and NO2.lm
+e.CO.lm <- auto.arima(CO.lm$residuals,approximation=FALSE)
+e.NO2.lm <- auto.arima(NO2.lm$residuals,approximation=FALSE)
+
+summary(e.CO.lm) #ARIMA(4,0,3)
+summary(e.NO2.lm) #ARIMA(2,0,1)
+
+allResiduals <- data.frame(CO.lm$residuals, NO2.lm$residuals)
+colnames(allResiduals) <- c("CO","NO2")
+cor(allResiduals) # highly correlated (0.63)
+```
+
+Next, we will use the data frame of the residuals to build a a multivariate model (VARMA). We will build a matrix with different values for p and q to determine the best VARMA models
+```{r, include=F}
+# Build VARMA model to minimum and maximum temperature residuals
+AICmatrix <- matrix(NA, 3, 4)
+for(p in 1:3){ # rows of AICmatrix
+  for(q in 0:3){ # columns of AICmatrix
+    varma.model <- VARMACpp(allResiduals, p=p, q=q, include.mean=F)
+    AICmatrix[p,q+1] <- varma.model$aic
+  }
+}
+
+# Pick the model with the lowest AIC
+AICmatrix
+```
+We chose 2 models with AIC scores on the lower end to compare. We will look at VARMA models with p=1, q=1 and p=2, q=3.
+```{r, include = F}
+varma.model1 <- VARMACpp(allResiduals, p=1, q=1, include.mean=F)
+summary(varma.model1) # aic=  7.450197 
+
+varma.model2 <- VARMACpp(allResiduals, p=2, q=3, include.mean=F)
+summary(varma.model2) # aic=  7.288931 
+```
+We ran both models and as suspected based on the AIC matrix, VARMA model 2 (p=2, q=3) had a lower AIC. We will also look at diagnostics to ensure that VARMA model 2 is a better fit.
+
+```{r}
+# Diagnostics
+# compute fitted values
+CO.fitted = allResiduals[(4:dim(allResiduals)[1]), 1] - varma.model2$residuals[, 1]
+NO2.fitted = allResiduals[(4:dim(allResiduals)[1]), 2] - varma.model2$residuals[, 2]
+
+# Residuals vs Fitted
+CO_resid_v_fitted = ggplot() + geom_point(aes(x=CO.fitted+CO.lm$fitted.values[4:length(CO.lm$fitted.values)], 
+                          y=varma.model2$residuals[,1])) +
+                          xlab("CO Fitted Values") + ylab("CO Residuals")
+
+NO2_resid_v_fitted = ggplot() + geom_point(aes(x=NO2.fitted+NO2.lm$fitted.values[4
+                                                                                 :length(NO2.lm$fitted.values)], 
+                          y=varma.model2$residuals[,2]))  +
+                          xlab("NO2 Fitted Values") + ylab("NO2 Residuals")
+
+ggarrange(CO_resid_v_fitted, NO2_resid_v_fitted, nrow=2, ncol=1)
+
+# QQ plot of residuals
+COQQ = qplot(sample=varma.model2$residuals[,1]) +
+  stat_qq_line(color="red") + ggtitle("CO Residuals QQ")
+
+NO2QQ = qplot(sample=varma.model2$residuals[,2]) +
+  stat_qq_line(color="red") + ggtitle("NO2 Residuals QQ")
+
+ggarrange(COQQ, NO2QQ, nrow=2, ncol=1)
+
+# independence of residuals
+MTSdiag(varma.model2)
+```
+
+
