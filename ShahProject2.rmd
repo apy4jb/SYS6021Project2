@@ -1,0 +1,159 @@
+
+```{r setup, include=FALSE}
+require("knitr")
+datadir <- "/Users/preetthegr8est/Desktop/UVA/fall 23/Stats/timeseries"
+sourcedir <-"/Users/preetthegr8est/Desktop/UVA/fall 23/Stats/timeseries"
+opts_knit$set(root.dir = sourcedir)
+library(forecast)
+library(mtsdi)
+library(MTS)
+```
+
+# Load data and impute missing values
+```{r cars}
+setwd(datadir)
+
+airquality = read.csv('AirQualityUCI.csv')
+
+# replace -200 with NA
+airquality[airquality == -200] <- NA
+
+# convert integer type to numeric
+intcols = c(4,5,7,8,9,10,11,12)
+for(i in 1:length(intcols)){
+  airquality[,intcols[i]] <- as.numeric(airquality[,intcols[i]])
+}
+
+setwd(sourcedir)
+
+# create new data frame with just CO and NO2
+AQdata = airquality[,c(3,10)]
+
+# impute missing air quality data
+f <- ~ CO.GT. + NO2.GT.
+t <- c(seq(1,dim(AQdata)[1],1))
+i <- mnimput(f, AQdata, eps=1e-3, ts=TRUE, method='gam', ga.control=list(formula=paste(names(AQdata)[c(1:2)],'~ns(t,2)')))
+
+# set airquality to imputed data
+AQdata <- i$filled.dataset
+
+# aggregate to daily maxima for model building
+dailyAQ <- aggregate(AQdata, by=list(as.Date(airquality[,1],"%m/%d/%Y")), FUN=max)
+```
+
+```{r Time Series}
+# Create a time series object
+# Create a Time Series Object for NO2
+NO2.ts <- ts(dailyAQ$NO2.GT)
+
+# Create a Data Frame with Time and Concentration for NO2
+NO2 <- data.frame(time = dailyAQ$Group.1, conc = dailyAQ$NO2.GT)
+NO2$month <- month(as.yearmon(NO2$time))
+
+# Fit a Linear Model for Trend and Seasonality for NO2
+NO2.trendseason <- lm(conc ~ time + as.factor(month), data = NO2)
+summary (NO2.trendseason)
+# Create a Time Series Plot for NO2
+ggplot(NO2, aes(x = time, y = conc)) + 
+  geom_line() + 
+  ggtitle("Daily Maximum NO2 Concentration over a Year") + 
+  ylab("Maximum Daily NO2") + 
+  xlab("Date") + 
+  geom_line(aes(x = time, y = NO2.trendseason$fitted.values), color = "blue") + 
+  stat_smooth(method = "lm", col = "red")
+```
+
+# 1(a)
+# Initially, we visualize the univariate time series of daily maximum NO2 concentrations. A red trend line is fitted to the entire dataset, revealing an overall upward trend in the daily maximum NO2 concentration across the entire temporal range of the data. According to the linear model analysis, the NO2 concentration data suggests a monthly trend with significant variations. August appears to have the lowest NO2 concentrations, as indicated by the highly significant negative coefficient associated with this month. Conversely, February shows the highest NO2 concentrations, supported by a significant positive coefficient. These findings may be attributed to various factors such as seasonal variations, meteorological conditions, and human activities. August, potentially experiencing better dispersion due to increased temperatures and wind speeds, could lead to lower concentrations. In contrast, February's stable atmospheric conditions may contribute to higher NO2 concentrations.
+
+```{r Pediogram}
+# Create a Time Series Object for NO2
+NO2.ts <- ts(dailyAQ$NO2.GT)
+
+# Plot Periodogram for NO2
+pg.NO2 <- spec.pgram(NO2.ts, spans = 9, demean = TRUE, log = 'no')
+spec.NO2 <- data.frame(freq = pg.NO2$freq, spec = pg.NO2$spec)
+
+ggplot(spec.NO2) + 
+  geom_line(aes(x = freq, y = spec)) + 
+  ggtitle("Periodogram of Daily Maximum Nitrogen Dioxide Concentration")
+
+# Find the peak frequency for NO2
+max.omega.NO2 <- pg.NO2$freq[which(pg.NO2$spec == max(pg.NO2$spec))]
+
+# Where is the peak?
+max.omega.NO2
+
+# What is the period for NO2?
+1 / max.omega.NO2
+
+# Sort the spectral density values for NO2
+sorted.spec.NO2 <- sort(pg.NO2$spec, decreasing = TRUE, index.return = TRUE)
+names(sorted.spec.NO2)
+
+# Extract corresponding frequencies and periods for NO2
+sorted.omegas.NO2 <- pg.NO2$freq[sorted.spec.NO2$ix]
+sorted.Ts.NO2 <- 1 / pg.NO2$freq[sorted.spec.NO2$ix]
+
+# Look at the first 20 for NO2
+sorted.omegas.NO2[1:20]
+sorted.Ts.NO2[1:20]
+
+```
+# 1(b)
+# The periodogram analysis indicates the dominance of red noise or long-term cyclic patterns in the NO2 concentration time series. Additionally, the presence of local peaks at approximately 7-day and 28-day periods suggests the influence of weekly and monthly seasonal components, respectively. The weekly seasonality could be related to patterns on weekends, while the monthly seasonality may be associated with specific monthly events or holidays.
+
+```{r Model Check}
+# ACF and PACF plots for NO2.ts
+acf.NO2 <- acf(NO2.ts, lag.max = 20, main = "ACF of NO2")
+pacf.NO2 <- pacf(NO2.ts, lag.max = 20, main = "PACF of NO2")
+
+
+# Fit ARIMA model using auto.arima
+arima_model <- auto.arima(NO2.ts)
+summary(arima_model)
+
+# Compare the models
+compare_models <- cbind(
+  Trend_Seasonal = AIC(NO2.trend.seasonal),
+  ARIMA = AIC(arima_model)
+)
+
+compare_models
+
+
+
+```
+# 1(c)
+# The auto.arima function is used to automatically select the best-fitting ARIMA model for the NO2 time series based on the AIC. The resulting ARIMA(1,1,1) model is then compared to the Trend_Seasonal model.Comparing this ARIMA(1,1,1) model with the Trend_Seasonal model, the AIC values clearly indicate that the ARIMA model (AIC = 3846.28) outperforms the Trend_Seasonal model (AIC = 4054.371) in terms of goodness of fit and model complexity. The lower AIC suggests that the ARIMA(1,1,1) model is a more suitable representation for the NO2 time series data. The coefficients of the AR and MA components, along with their standard errors, provide insights into the structure of the model.
+
+```{r Assesment}
+# Assessing linear model for trends and seasonality
+summary(NO2.trendseason)
+# Residuals of the linear model
+residuals_trendseason <- residuals(NO2.trendseason)
+
+# Plot residuals over time
+plot(NO2$time, residuals_trendseason, type = "l", col = "blue", xlab = "Time", ylab = "Residuals",
+     main = "Residuals of Linear Model for Trends and Seasonality")
+# Normality test (e.g., Shapiro-Wilk)
+shapiro.test(residuals_trendseason)
+# Assessing ARIMA model
+summary(arima_model)
+
+# Autocorrelation function of residuals
+acf(residuals_arima)
+# Ljung-Box test for white noise
+Box.test(residuals_arima, lag = 20, type = "Ljung-Box")
+# Adjusted R-squared for linear model
+summary(NO2.trendseason)$adj.r.squared
+# AIC values for both models
+AIC(NO2.trendseason)
+AIC(arima_model)
+
+```
+# 1(d)
+# The analysis of the NO2 time series data reveals valuable insights from both the linear model capturing trends and seasonality and the ARIMA model. The linear model suggests a significant upward trend over time and varying monthly effects on NO2 concentration. Residuals from the linear model show some heteroscedasticity, and the Shapiro-Wilk normality test indicates approximately normal distribution. The ARIMA(1,1,1) model, with coefficients for AR and MA components, performs well with a lower AIC (3846.28), suggesting superior goodness of fit compared to the linear model (AIC = 3905.989). However, residuals from the ARIMA model exhibit some autocorrelation, indicating potential room for improvement. Both models contribute to understanding the NO2 time series, but the lower AIC and overall performance metrics favor the ARIMA model, emphasizing the need for careful consideration and refinement in time series modeling for air quality data.
+
+# 1(e)
+#The diagnostics of the selected models reveal potential issues. The linear model exhibits heteroscedasticity in residuals, violating the assumption of constant variance. Additionally, autocorrelation in residuals and the need for a critical assessment of normality raise concerns about the model's robustness. In the ARIMA model, significant autocorrelation at lag 1 and a non-negligible Ljung-Box test p-value suggest potential inadequacies in capturing all temporal patterns, emphasizing the importance of further refinement and model exploration.
