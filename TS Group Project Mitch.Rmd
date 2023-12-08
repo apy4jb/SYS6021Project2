@@ -153,10 +153,10 @@ summary(varma.model1) # aic=  7.450197
 varma.model2 <- VARMACpp(allResiduals, p=2, q=3, include.mean=F)
 summary(varma.model2) # aic=  7.288931 
 ```
-We ran both models and as suspected based on the AIC matrix, VARMA model 2 (p=2, q=3) had a lower AIC. We will also look at diagnostics to ensure that VARMA model 2 is a better fit.
+We ran both models and as suspected based on the AIC matrix, VARMA model 2 (p=2, q=3) had a lower AIC metric, so we will move forward by examining the diagnostics to ensure that VARMA model 2 is a better fit.
 
+#### Diagnostics
 ```{r}
-# Diagnostics
 # compute fitted values
 CO.fitted = allResiduals[(4:dim(allResiduals)[1]), 1] - varma.model2$residuals[, 1]
 NO2.fitted = allResiduals[(4:dim(allResiduals)[1]), 2] - varma.model2$residuals[, 2]
@@ -185,5 +185,5 @@ ggarrange(COQQ, NO2QQ, nrow=2, ncol=1)
 # independence of residuals
 MTSdiag(varma.model2)
 ```
-
+As we look at the residuals v fitted for both CO and NO2, we can see that this model meets our assumption of linearity and randomly distributed residuals. Similarly, looking at the QQ plot we can see a roughly normal distribution of our residuals. Both have slightly fat negative tails and skinny positive tails (more so CO), but overall both distributions are normal enough. As we look at the diagnostic plots looking at our lags, we can see that after lag 6 the lags lack significance. We can see in the Ljung-Box plot that after lag we reject the null hypothesis. Looking at the Cross Correlation Function plots we can see significant lags beginning after lag 6 which means the current model is not fully accounting for the relationship across time between CO and NO2. Therefore, we can conclude that the problems remaining with our selected model is its inability to account for the relationship between CO and NO2 at certain lags beyond 5.
 
