@@ -1,23 +1,45 @@
 ---
 title: "Project 2"
-author: "Group Members' Names"
+author: "Lea Jih-Vieira, Blake Zimbardi, Preet Shah, Mitch Whalen"
 date: "Date"
 output:
   pdf_document: default
   html_document: default
 ---
+# SYS 6021 Group Project 2
 
+# Modeling Univariate and Multivariate Time Series
+
+## Setup
 ```{r setup, include=FALSE}
 require("knitr")
-datadir <- ""
-sourcedir <-""
+datadir <- "/Users/leajih-vieira/Documents/GitHub/SYS6021Project2"
+sourcedir <-"/Users/leajih-vieira/Downloads/UVA Grad/SYS 6021"
 opts_knit$set(root.dir = sourcedir)
 library(forecast)
 library(mtsdi)
 library(MTS)
+library(here)
+library(dplyr)
+library(ggplot2)
+library(ggpubr)
+library(ggfortify)
+library(MASS)
+library(lindia)
+library(olsrr)
+library(car)
+library(data.table)
+library(ggplot2)
+library(ggpubr)
+library(psych)
+library(ggResidpanel)
+library(tidyverse)
+library(lubridate)
+library(zoo)
+library(tseries)
 ```
 
-# Load data and impute missing values
+Load data and impute missing values.
 ```{r cars}
 setwd(datadir)
 
@@ -46,5 +68,572 @@ i <- mnimput(f, AQdata, eps=1e-3, ts=TRUE, method='gam', ga.control=list(formula
 AQdata <- i$filled.dataset
 
 # aggregate to daily maxima for model building
-dailyAQ <- aggregate(AQdata, by=list(as.Date(airquality[,1],"%m/%d/%Y")), FUN=max)
+dailyAQ <- aggregate(AQdata, by=list(as.Date(airquality[,1],"%m/%d/%Y")), 
+                     FUN=max)
 ```
+
+## Part 1: Building Univariate Time Series Models
+
+### Daily Maximum Carbon Monoxide (CO) Concentrations - Blake Zimbardi
+```{r Plot Time Series}
+# use the ts() command to get a time series of daily co amount using 
+# daily co data from all days
+CO.ts<-ts(dailyAQ$CO.GT)
+
+##Plot the time series you created for daily co, CO.ts
+CO = data.frame(time=dailyAQ$Group.1, conc=dailyAQ$CO.GT.)
+CO$month = month(as.yearmon(CO$time))
+CO.trendseason <- lm(conc ~ time + as.factor(month), data = CO)
+
+ggplot(CO, aes(x=time,y=conc)) + 
+  geom_line() + 
+  ggtitle("Daily Maximum Carbon Monoxide Concentration over a Year") + 
+  ylab("Maximum Daily CO") + 
+  xlab("Date") + 
+  geom_line(aes(x=time,y=CO.trendseason$fitted.values), color="blue") + 
+  stat_smooth(method="lm",col="red")
+```
+
+#### 1(a)
+
+First, we plot the daily maximum carbon monoxide concentration as a univariate time series. We establish a red trend line for the entire dataset and see that across the entire data set, the daily maximum carbon monoxide concentration increases. Likewise, there is a yearly peak in daily maximum carbon monoxide concentration during December, corresponding to the holiday season. In fact, it appears that daily maximum carbon monoxide concentrations occur during holiday seasons (the highest travel period in the year), shown with the blue trend line. 
+```{r Plot Periodogram}
+pg.CO <- spec.pgram(CO.ts,spans=9,demean=T,log='no')
+spec.CO <- data.frame(freq=pg.CO$freq, spec=pg.CO$spec)
+
+ggplot(spec.CO) + geom_line(aes(x=freq,y=spec)) + 
+  ggtitle("Smooth Periodogram of Daily Maximum Carbon Monoxide Concentration")
+# Find the peak, max.omega.precip
+max.omega.CO<-pg.CO$freq[which(pg.CO$spec==max(pg.CO$spec))]
+
+# Where is the peak?
+max.omega.CO
+
+# What is the period?
+1/max.omega.CO
+
+sorted.spec <- sort(pg.CO$spec, decreasing=T, index.return=T)
+names(sorted.spec)
+
+# corresponding periods (omegas = frequences, Ts = periods)
+sorted.omegas <- pg.CO$freq[sorted.spec$ix]
+sorted.Ts <- 1/pg.CO$freq[sorted.spec$ix]
+
+# look at first 20
+sorted.omegas[1:20]
+sorted.Ts[1:20]
+```
+
+#### 1(b)
+
+Looking at the Periodogram, we see a maximum seasonal component at low frequencies/high periods. That data corresponds with high autocorrelation and is also known as "red noise", which is typically modeled through autoregressive models instead of through seasons. Considering that, there are also local peaks at ~7 day period (suggesting there is a weekly season peak (likely on the weekends)) and ~28 day period (suggesting there is a monthly seasonal peak (likely on monthly holidays)). 
+```{r Confirming Stationary Time Series and Appropriate Models}
+# Model seasonality
+t <- c(seq(1,dim(CO)[1]))
+CO.trend.seasonal <- lm(CO.ts ~ t + sin(2*pi*t/12) + cos(2*pi*t/12))
+summary(CO.trend.seasonal)
+
+# Get the residuals from the CO.trend.seasonal model above and store in e.ts.CO:
+e.ts.CO <- ts(CO.trend.seasonal$residuals)
+    
+# Plot the residuals for the CO.trend model
+autoplot(e.ts.CO)
+    
+# Plot the autocorrelation (ACF) of the residuals of temp.trend.seasonal
+CO.acf <- ggAcf(e.ts.CO)
+# CO.acf
+
+# Plot the partial autocorrelation (PACF) of the residuals temp.trend.seasonal
+CO.pacf <- ggPacf(e.ts.CO)
+# CO.pacf  
+
+# Plot acf and pacf side by side for easier examination
+ggarrange(CO.acf,CO.pacf,nrow=2,ncol=1)
+```
+
+#### 1(c)
+
+We observe from the plot of residuals from our time series and ACF that our data is stationary, so we can proceed with choosing the appropriate model (AR, MA, or ARMA). We plot ACF and PACF graphs and observe that there is significant lags at various lags, but since there is sinusoidal decay, we choose only the first few significant lags (1, 2, 3, 6, 7, 8) to model. Likewise, there are 3 significant lags in PACF (1, 6, 13), so, we determine that there an Autoregressive Moving Average (AR) model is most appropriate since there are both autoregressive and moving average components. We build and compare ARMA models for the most extreme cases of p = [1 3] and q = [1] and then automatically select an Autoregressive Integrated Moving Average (ARIMA) model for comparison.
+``` {r Building ARMA and ARIMA Models}
+#arma(1,1), p = 1, q = 1
+CO.arma11 <- arma(e.ts.CO, order=c(1,1), include.intercept=FALSE)
+summary(CO.arma11)
+
+CO.arma11.resid.acf <- ggAcf(CO.arma11$residuals)
+CO.arma11.resid.pacf <- ggPacf(CO.arma11$residuals)
+ggarrange(CO.arma11.resid.acf,CO.arma11.resid.pacf,nrow=2,ncol=1)
+
+CO.arma11.resid.fitted = ggplot() + 
+  geom_point(aes(x=fitted(CO.arma11), y=CO.arma11$residuals)) + 
+  ggtitle("ARMA(3,1) Fitted vs. Residuals")
+
+CO.arma11.resid.qq = qplot(sample=CO.arma11$residuals) + 
+  stat_qq_line(color="red") + 
+  ggtitle("QQ Plot ARMA(3,1) Fitted vs. Residuals")
+
+ggarrange(CO.arma11.resid.fitted, CO.arma11.resid.qq,ncol=2, nrow=1)
+#arma(3,1), p = 3, q = 1
+CO.arma31 <- arma(e.ts.CO, order=c(3,1), include.intercept=FALSE)
+summary(CO.arma31)
+
+CO.arma31.resid.acf <- ggAcf(CO.arma31$residuals)
+CO.arma31.resid.pacf <- ggPacf(CO.arma31$residuals)
+ggarrange(CO.arma31.resid.acf,CO.arma31.resid.pacf,nrow=2,ncol=1)
+
+CO.arma31.resid.fitted = ggplot() + 
+  geom_point(aes(x=fitted(CO.arma31), y=CO.arma31$residuals)) + 
+  ggtitle("ARMA(3,1) Fitted vs. Residuals")
+
+CO.arma31.resid.qq = qplot(sample=CO.arma31$residuals) + 
+  stat_qq_line(color="red") + 
+  ggtitle("QQ Plot ARMA(3,1) Fitted vs. Residuals")
+
+ggarrange(CO.arma31.resid.fitted, CO.arma31.resid.qq,ncol=2, nrow=1)
+
+#arima
+CO.auto <- auto.arima(e.ts.CO, approximation=FALSE)
+summary(CO.auto)
+
+CO.auto.resid.acf <- ggAcf(CO.auto$residuals)
+CO.auto.resid.pacf <- ggPacf(CO.auto$residuals)
+ggarrange(CO.auto.resid.acf,CO.auto.resid.pacf,nrow=2,ncol=1)
+
+CO.auto.resid.fitted = ggplot() + 
+  geom_point(aes(x=fitted(CO.auto), y=CO.auto$residuals)) + 
+  ggtitle("ARIMA Fitted vs. Residuals")
+
+CO.auto.resid.qq = qplot(sample=CO.auto$residuals) + 
+  stat_qq_line(color="red") + 
+  ggtitle("QQ Plot ARIMA Fitted vs. Residuals")
+
+ggarrange(CO.auto.resid.fitted, CO.auto.resid.qq,ncol=2, nrow=1)
+ggtsdiag(CO.auto)
+
+```
+#### 1(d), 1(e)
+To assess our models, we evaluate the best model between ARMA(1,1), ARMA(3,1), and our automatically selected ARIMA(4,0,3) based off the lowest AIC and judgement from their diagnostic plots. We see that ARIMA (4,0,3) performs the best as it has the lowest AIC = 1474.08, followed by ARMA(3,1) AIC = 1480.94 and ARMA(1,1) AIC = 1489.55. From the ACF and PACF graphs, we again see the best performance from the ARIMA(4,0,3) model as it has the least significant lags in magnitude of lag despite magnitude of lag being relatively similar between ARIMA(4,0,3) and ARMA(3,1) (ARMA(1,1) is also low, but still almost double the highest magnitude of the lag from ARIMA(4,0,3).). Despite the ARMA(3,1) model performing better in lag location than ARIMA(4,0,3) (at ACF = 5 and PACF = 5 vs. ACF = 4 and PACF = 4, respectively), we still choose the ARIMA(4,0,3) as the best model for modeling daily maximum carbon monoxide concentrations. We further confirm this based off the residual diagnostic plots for residuals, since p > 0.05 for 3 lags (from the Ljung-Box statistic) hence it is adequate for our model.
+
+There are still issues from our diagnostic plots, however. All of the residuals plots indicate non-linearity (suggesting the predictor should be changed) and each QQ-plot exhibits heavy two-tail failure, showing the whole distribution is non-gaussian. 
+
+### Daily Maximum Nitrogen Dioxide (NO2) Concentrations - Preet Shah
+
+```{r Time Series}
+# Create a time series object
+# Create a Time Series Object for NO2
+NO2.ts <- ts(dailyAQ$NO2.GT)
+
+# Create a Data Frame with Time and Concentration for NO2
+NO2 <- data.frame(time = dailyAQ$Group.1, conc = dailyAQ$NO2.GT)
+NO2$month <- month(as.yearmon(NO2$time))
+
+# Fit a Linear Model for Trend and Seasonality for NO2
+NO2.trendseason <- lm(conc ~ time + as.factor(month), data = NO2)
+summary (NO2.trendseason)
+# Create a Time Series Plot for NO2
+ggplot(NO2, aes(x = time, y = conc)) + 
+  geom_line() + 
+  ggtitle("Daily Maximum NO2 Concentration over a Year") + 
+  ylab("Maximum Daily NO2") + 
+  xlab("Date") + 
+  geom_line(aes(x = time, y = NO2.trendseason$fitted.values), color = "blue") + 
+  stat_smooth(method = "lm", col = "red")
+```
+
+#### 1(a)
+
+# Initially, we visualize the univariate time series of daily maximum NO2 concentrations. A red trend line is fitted to the entire dataset, revealing an overall upward trend in the daily maximum NO2 concentration across the entire temporal range of the data. According to the linear model analysis, the NO2 concentration data suggests a monthly trend with significant variations. August appears to have the lowest NO2 concentrations, as indicated by the highly significant negative coefficient associated with this month. Conversely, February shows the highest NO2 concentrations, supported by a significant positive coefficient. These findings may be attributed to various factors such as seasonal variations, meteorological conditions, and human activities. August, potentially experiencing better dispersion due to increased temperatures and wind speeds, could lead to lower concentrations. In contrast, February's stable atmospheric conditions may contribute to higher NO2 concentrations.
+
+```{r Pediogram}
+# Create a Time Series Object for NO2
+NO2.ts <- ts(dailyAQ$NO2.GT)
+
+# Plot Periodogram for NO2
+pg.NO2 <- spec.pgram(NO2.ts, spans = 9, demean = TRUE, log = 'no')
+spec.NO2 <- data.frame(freq = pg.NO2$freq, spec = pg.NO2$spec)
+
+ggplot(spec.NO2) + 
+  geom_line(aes(x = freq, y = spec)) + 
+  ggtitle("Periodogram of Daily Maximum Nitrogen Dioxide Concentration")
+
+# Find the peak frequency for NO2
+max.omega.NO2 <- pg.NO2$freq[which(pg.NO2$spec == max(pg.NO2$spec))]
+
+# Where is the peak?
+max.omega.NO2
+
+# What is the period for NO2?
+1 / max.omega.NO2
+
+# Sort the spectral density values for NO2
+sorted.spec.NO2 <- sort(pg.NO2$spec, decreasing = TRUE, index.return = TRUE)
+names(sorted.spec.NO2)
+
+# Extract corresponding frequencies and periods for NO2
+sorted.omegas.NO2 <- pg.NO2$freq[sorted.spec.NO2$ix]
+sorted.Ts.NO2 <- 1 / pg.NO2$freq[sorted.spec.NO2$ix]
+
+# Look at the first 20 for NO2
+sorted.omegas.NO2[1:20]
+sorted.Ts.NO2[1:20]
+
+```
+
+#### 1(b)
+
+# The periodogram analysis indicates the dominance of red noise or long-term cyclic patterns in the NO2 concentration time series. Additionally, the presence of local peaks at approximately 7-day and 28-day periods suggests the influence of weekly and monthly seasonal components, respectively. The weekly seasonality could be related to patterns on weekends, while the monthly seasonality may be associated with specific monthly events or holidays.
+
+```{r Model Check}
+# ACF and PACF plots for NO2.ts
+acf.NO2 <- acf(NO2.ts, lag.max = 20, main = "ACF of NO2")
+pacf.NO2 <- pacf(NO2.ts, lag.max = 20, main = "PACF of NO2")
+
+
+# Fit ARIMA model using auto.arima
+arima_model <- auto.arima(NO2.ts)
+summary(arima_model)
+
+# Compare the models
+compare_models <- cbind(
+  Trend_Seasonal = AIC(NO2.trendseason),
+  ARIMA = AIC(arima_model)
+)
+
+compare_models
+```
+
+#### 1(c)
+
+# The auto.arima function is used to automatically select the best-fitting ARIMA model for the NO2 time series based on the AIC. The resulting ARIMA(1,1,1) model is then compared to the Trend_Seasonal model.Comparing this ARIMA(1,1,1) model with the Trend_Seasonal model, the AIC values clearly indicate that the ARIMA model (AIC = 3846.28) outperforms the Trend_Seasonal model (AIC = 4054.371) in terms of goodness of fit and model complexity. The lower AIC suggests that the ARIMA(1,1,1) model is a more suitable representation for the NO2 time series data. The coefficients of the AR and MA components, along with their standard errors, provide insights into the structure of the model.
+
+```{r Assesment}
+# Assessing linear model for trends and seasonality
+summary(NO2.trendseason)
+# Residuals of the linear model
+residuals_trendseason <- residuals(NO2.trendseason)
+
+# Plot residuals over time
+plot(NO2$time, residuals_trendseason, type = "l", col = "blue", 
+     xlab = "Time", ylab = "Residuals",
+     main = "Residuals of Linear Model for Trends and Seasonality")
+# Normality test (e.g., Shapiro-Wilk)
+shapiro.test(residuals_trendseason)
+# Assessing ARIMA model
+summary(arima_model)
+
+residuals_arima <- residuals(arima_model)
+
+# Autocorrelation function of residuals
+acf(residuals_arima)
+# Ljung-Box test for white noise
+Box.test(residuals_arima, lag = 20, type = "Ljung-Box")
+# Adjusted R-squared for linear model
+summary(NO2.trendseason)$adj.r.squared
+# AIC values for both models
+AIC(NO2.trendseason)
+AIC(arima_model)
+
+```
+
+#### 1(d)
+# The analysis of the NO2 time series data reveals valuable insights from both the linear model capturing trends and seasonality and the ARIMA model. The linear model suggests a significant upward trend over time and varying monthly effects on NO2 concentration. Residuals from the linear model show some heteroscedasticity, and the Shapiro-Wilk normality test indicates approximately normal distribution. The ARIMA(1,1,1) model, with coefficients for AR and MA components, performs well with a lower AIC (3846.28), suggesting superior goodness of fit compared to the linear model (AIC = 3905.989). However, residuals from the ARIMA model exhibit some autocorrelation, indicating potential room for improvement. Both models contribute to understanding the NO2 time series, but the lower AIC and overall performance metrics favor the ARIMA model, emphasizing the need for careful consideration and refinement in time series modeling for air quality data.
+
+#### 1(e)
+# The diagnostics of the selected models reveal potential issues. The linear model exhibits heteroscedasticity in residuals, violating the assumption of constant variance. Additionally, autocorrelation in residuals and the need for a critical assessment of normality raise concerns about the model's robustness. In the ARIMA model, significant autocorrelation at lag 1 and a non-negligible Ljung-Box test p-value suggest potential inadequacies in capturing all temporal patterns, emphasizing the importance of further refinement and model exploration.
+
+## Part 2: Building Multivariate Time Series Models - Mitch Whalen
+
+#### Creating Time Series
+```{r}
+# Create time series of daily CO & NO2
+CO_AQ <- dailyAQ$CO.GT.
+NO2_AQ <- dailyAQ$NO2.GT.
+
+##Use the ts() command to get a time series of CO_AQ & NO2_AQ
+CO.ts<-ts(CO_AQ)
+NO2.ts<-ts(NO2_AQ)
+```
+
+#### Modeling Trend
+```{r}
+# Create a time index
+time.air <- c(1:(length(CO.ts)))
+
+# Create linear model
+CO.lm <- lm(CO.ts[time.air] ~ time.air)
+summary(CO.lm)
+# FIX
+# ggplot(dailyAQ, aes(x = time.air, y = CO)) +
+#   geom_line() +
+#   geom_smooth(method = "lm", col = "red", se = FALSE) +
+#   labs(x = "Time", y = "CO Values", title = "CO Time Series with Fitted Trend")
+
+NO2.lm <- lm(NO2.ts[time.air] ~ time.air)
+summary(NO2.lm)
+# FIX
+# ggplot(dailyAQ, aes(x = time.air, y = NO2)) +
+#   geom_line() +
+#   geom_smooth(method = "lm", col = "red", se = FALSE) +
+#   labs(x = "Time", y = "NO2 Values", 
+ #       title = "NO2 Time Series with Fitted Trend")
+
+```
+We can see a significant positive trend with both variables (especially NO2). In both models we used "time.air" or the time to predict the value. For the CO model we got a p-value of 0.003 and an adjusted R^2 of 0.020. For the NO2 model we got a p-value of < 2.2e-16 and an adjusted R^2 0.300.
+
+#### Modeling Seasonality
+```{r}
+# Periodograms
+spec.pgram(CO.ts,spans=9,demean=T,log='no')
+spec.pgram(NO2.ts,spans=9,demean=T,log='no')
+
+```
+We can see in the periodograms there does not appear to be a strong seasonal component in either time series, however there are some small peak, so we will explore modeling the seasonality with sin & cos. We will also include the trend since we have established it as a significant predictor.
+```{r}
+# Seasonal models for CO and NO2
+CO_season.lm <- lm(CO.ts[time.air] ~ time.air + sin(2*pi*time.air/12) + 
+                     cos(2*pi*time.air/12))
+summary(CO_season.lm)
+
+# FIX
+# ggplot(dailyAQ, aes(x=time.air,y=CO)) + geom_line() + 
+#   geom_line(aes(x=time.air,y=CO_season.lm$fitted.values),color="red") +
+#   xlab("Time") + ylab("CO Values")
+
+NO2_season.lm <- lm(NO2.ts[time.air] ~ time.air + sin(2*pi*time.air/12) + 
+                      cos(2*pi*time.air/12))
+summary(NO2_season.lm)
+
+# FIX
+# ggplot(dailyAQ, aes(x=time.air,y=NO2)) + geom_line() + 
+#   geom_line(aes(x=time.air,y=NO2_season.lm$fitted.values),color="red") +
+#   xlab("Time") + ylab("NO2 Values")
+```
+We can see that adding a seasonal component does not improve the efficacy of our model. In both models the trend proved to be significant, but neither the sin nor cos component was significant. For the CO model we got a p-value of 0.011 and an adjusted R^2 of 0.021. For the NO2 model we got a p-value of < 2.2e-16 and an adjusted R^2 0.300. The p-values got lower using the seasonal model, whiel the adjusted R^2 remained essentially the same, so we will proceed just using the trend models.
+
+#### Modeling Auto-Regressive and Moving Average Components
+```{r, include=F}
+# Build arima models to residuals to CO.lm and NO2.lm
+e.CO.lm <- auto.arima(CO.lm$residuals,approximation=FALSE)
+e.NO2.lm <- auto.arima(NO2.lm$residuals,approximation=FALSE)
+
+summary(e.CO.lm) #ARIMA(4,0,3)
+summary(e.NO2.lm) #ARIMA(2,0,1)
+
+allResiduals <- data.frame(CO.lm$residuals, NO2.lm$residuals)
+colnames(allResiduals) <- c("CO","NO2")
+cor(allResiduals) # highly correlated (0.63)
+```
+
+Next, we will use the data frame of the residuals to build a a multivariate model (VARMA). We will build a matrix with different values for p and q to determine the best VARMA models
+```{r, include=F}
+# Build VARMA model to minimum and maximum temperature residuals
+AICmatrix <- matrix(NA, 3, 4)
+for(p in 1:3){ # rows of AICmatrix
+  for(q in 0:3){ # columns of AICmatrix
+    varma.model <- VARMACpp(allResiduals, p=p, q=q, include.mean=F)
+    AICmatrix[p,q+1] <- varma.model$aic
+  }
+}
+
+# Pick the model with the lowest AIC
+AICmatrix
+```
+We chose 2 models with AIC scores on the lower end to compare. We will look at VARMA models with p=1, q=1 and p=2, q=3.
+```{r, include = F}
+varma.model1 <- VARMACpp(allResiduals, p=1, q=1, include.mean=F)
+summary(varma.model1) # aic=  7.450197 
+
+varma.model2 <- VARMACpp(allResiduals, p=2, q=3, include.mean=F)
+summary(varma.model2) # aic=  7.288931 
+```
+We ran both models and as suspected based on the AIC matrix, VARMA model 2 (p=2, q=3) had a lower AIC metric, so we will move forward by examining the diagnostics to ensure that VARMA model 2 is a better fit.
+
+#### Diagnostics
+```{r}
+# compute fitted values
+CO.fitted = allResiduals[(4:dim(allResiduals)[1]), 1] - 
+  varma.model2$residuals[, 1]
+NO2.fitted = allResiduals[(4:dim(allResiduals)[1]), 2] - 
+  varma.model2$residuals[, 2]
+
+# Residuals vs Fitted
+CO_resid_v_fitted = ggplot() + 
+  geom_point(aes(x=CO.fitted+CO.lm$fitted.values[4:length(CO.lm$fitted.values)], 
+                          y=varma.model2$residuals[,1])) +
+                          xlab("CO Fitted Values") + ylab("CO Residuals")
+
+NO2_resid_v_fitted = ggplot() + 
+  geom_point(aes(x=NO2.fitted+NO2.lm$fitted.values[4:length(NO2.lm$fitted.values)], 
+                          y=varma.model2$residuals[,2]))  +
+                          xlab("NO2 Fitted Values") + ylab("NO2 Residuals")
+
+ggarrange(CO_resid_v_fitted, NO2_resid_v_fitted, nrow=2, ncol=1)
+
+# QQ plot of residuals
+COQQ = qplot(sample=varma.model2$residuals[,1]) +
+  stat_qq_line(color="red") + ggtitle("CO Residuals QQ")
+
+NO2QQ = qplot(sample=varma.model2$residuals[,2]) +
+  stat_qq_line(color="red") + ggtitle("NO2 Residuals QQ")
+
+ggarrange(COQQ, NO2QQ, nrow=2, ncol=1)
+
+# independence of residuals
+MTSdiag(varma.model2)
+```
+As we look at the residuals v fitted for both CO and NO2, we can see that this model meets our assumption of linearity and randomly distributed residuals. Similarly, looking at the QQ plot we can see a roughly normal distribution of our residuals. Both have slightly fat negative tails and skinny positive tails (more so CO), but overall both distributions are normal enough. As we look at the diagnostic plots looking at our lags, we can see that after lag 6 the lags lack significance. We can see in the Ljung-Box plot that after lag we reject the null hypothesis. Looking at the Cross Correlation Function plots we can see significant lags beginning after lag 6 which means the current model is not fully accounting for the relationship across time between CO and NO2. Therefore, we can conclude that the problems remaining with our selected model is its inability to account for the relationship between CO and NO2 at certain lags beyond 5.
+
+## Part 3: Simulating from Univariate and Multivariate Time Series Models - Lea Jih-Vieira
+
+Now, we will be simulating a year of synthetic observations of daily maximum carbon monoxide (CO) and nitrogen dioxide (NO2) concentrations from our univariate and multivariate models.
+
+#### Univariate CO Model
+
+```{r}
+CO.auto.forecast <- forecast(CO.auto, h=365)
+
+plot(CO.auto.forecast)
+```
+The CO model and its associated forecast can be seen in the plot above. As we can see visually, this model does not reproduce the appearance of the time series very well. This may be in part because of the limitations to this model that we discussed before: all of the residuals plots indicate non-linearity and each QQ-plot exhibits heavy two-tail failure.
+
+We can also investigate the model's ability to reproduce the seasonality of the CO time series.
+```{r}
+pg.co.original <- spec.pgram(CO.ts, spans=9, demean=T, log='no')
+
+pg.co.forecast <- spec.pgram(CO.auto.forecast$fitted, spans=9, demean=T, 
+                             log='no')
+```
+Overall, the CO model does reproduce the seasonality of the time series. While smoothed, the model's fitted values do follow the behavior of the original data, excluding some of the noise present in the data.
+
+Next, we can observe how well the model can reproduce the auto-correlation of the time series.
+```{r}
+CO.auto.acf <- ggAcf(CO.auto.forecast$fitted)
+CO.auto.pacf <- ggPacf(CO.auto.forecast$fitted)
+
+CO.original.acf <- ggAcf(CO.ts)
+CO.original.pacf <- ggPacf(CO.ts)
+
+ggarrange(CO.original.acf, CO.original.pacf,nrow=2,ncol=1)
+ggarrange(CO.auto.acf, CO.auto.pacf,nrow=2,ncol=1)
+```
+The CO model also does a good job of reproducing the autocorrelations of the original data, as seen by the plots above. Both the ACF and PACF follow the same behavior and magnitude as the original data, making it a good model of autocorrelation.
+
+#### Univariate NO2 Model
+
+```{r}
+NO.arima.forecast <- forecast(arima_model, h=365)
+
+plot(NO.arima.forecast)
+```
+Visually, the forecasted values from the NO2 ARIMA model do not look like they are a very good fit for the model, as it does not capture much of the data's trends. As discussed when building this model, there is significant autocorrelation at lag 1 and a non-negligible Ljung-Box test p-value, which will affect the model.
+
+```{r}
+pg.no.original <- spec.pgram(NO2.ts, spans=9, demean=T, log='no')
+
+pg.no.forecast <- spec.pgram(NO.arima.forecast$fitted, spans=9, demean=T, 
+                             log='no')
+```
+Overall, the NO2 model does reproduce the seasonality of the time series, but does fail to model the magnitude at which the seasonality occurs. As we can see from the plots, the peaks are much lower in the fitted values versus the original observations.
+
+```{r}
+NO.auto.acf <- ggAcf(NO.arima.forecast$fitted)
+NO.auto.pacf <- ggPacf(NO.arima.forecast$fitted)
+
+NO.original.acf <- ggAcf(NO2.ts)
+NO.original.pacf <- ggPacf(NO2.ts)
+
+ggarrange(NO.original.acf, NO.original.pacf,nrow=2,ncol=1)
+ggarrange(NO.auto.acf, NO.auto.pacf,nrow=2,ncol=1)
+```
+The NO2 model has a similar PACF to the original observations, but the ACF fails to resemble the original data. The peaks and troughs of the observations are not very noticeable in the model, and the magnitudes are also much higher. These shortfalls make the model un-ideal to reproduce the autocorrelation of the original values.
+
+Finally, we can look at univariate models' ability to reproduce observed cross-correlation across time series.
+```{r}
+# (Hint: Use the function ‘cor(df)’ where df is a dataframe of observed or simulated pollutant concentrations)
+air.df <- data.frame(CO=as.matrix(CO.ts), NO2=as.matrix(NO2.ts))
+
+air.model.df <- data.frame(CO= CO.auto.forecast$fitted, 
+                           NO2= NO.arima.forecast$fitted)
+
+cor(air.df)
+cor(air.model.df)
+```
+As we can see from the correlation matrices above, the univariate models only capture 0.37 of the correlation between the CO and NO2 levels. While the univariate models do capture some of the correlation, they also have a handful of shortfalls in modeling the relationship of the data.
+
+Now, we will investigate the multivariate model to see if it does a better job modeliing the data over the univariate models.
+
+#### Multivariate CO and NO2 Model
+
+```{r}
+var.sim = VARMAsim(365, phi= varma.model2$Phi, 
+                   theta= varma.model2$Theta,
+                   sigma= varma.model2$Sigma)
+```
+
+```{r}
+ggplot() + 
+  geom_line(aes(x = seq(1, length(NO2.ts)), NO2.ts), 
+            color= "blue") +
+  geom_line(aes(x = seq(1, length(NO2.ts)), CO.ts), 
+            color= "red") +
+  xlab("Time Step") + ylab("Concentration")
+```
+```{r}
+ggplot() +
+  geom_line(aes(x= seq(1, 365), y=var.sim$series[,1] + mean(CO.ts)),
+  color="red") +
+  geom_line(aes(x= seq(1, 365), y=var.sim$series[,2] + mean(NO2.ts)),
+            color="blue") +
+  xlab("Time Step") + ylab("Concentration")
+```
+Based on the plots above, we can visually see that the VARMA model simulates the values much more closely with the original observations. Overall, behavior and magnitude are similar to the original, aside from some differences in noise. This first visual analysis gives us indication that the VARMA model may be better, but we should still look at additional daignostics before coming to a final conclusion.
+
+```{r}
+pg.no.original <- spec.pgram(NO2.ts, spans=9, demean=T, log='no')
+
+pg.no.forecast.varma <- spec.pgram(var.sim$series[,2], 
+                                   spans=9, demean=T, log='no')
+
+pg.co.original <- spec.pgram(CO.ts, spans=9, demean=T, log='no')
+
+pg.co.forecast.varma <- spec.pgram(var.sim$series[,2], spans=9, 
+                                   demean=T, log='no')
+```
+Despite the VARMA model having good simulation of the original data, the periodigrams show that they may be introducing a lot of additional noise into the predictions. Out of the three models, the seasonality of the VARMA model is the least reminiscent of the orignal observations because of this. However, following the overall trends of the peaks and troughs of the VARMA model does show that it does in fact follow the general behavior of the observations.
+
+```{r}
+NO.varma.acf <- ggAcf(var.sim$series[,2])
+NO.varma.pacf <- ggPacf(var.sim$series[,2])
+
+NO.original.acf <- ggAcf(NO2.ts)
+NO.original.pacf <- ggPacf(NO2.ts)
+
+ggarrange(NO.original.acf, NO.original.pacf,nrow=2,ncol=1)
+ggarrange(NO.varma.acf, NO.varma.pacf,nrow=2,ncol=1)
+
+# ----------
+
+CO.varma.acf <- ggAcf(var.sim$series[,1])
+CO.varma.pacf <- ggPacf(var.sim$series[,1])
+
+CO.original.acf <- ggAcf(CO.ts)
+CO.original.pacf <- ggPacf(CO.ts)
+
+ggarrange(NO.original.acf, NO.original.pacf,nrow=2,ncol=1)
+ggarrange(CO.varma.acf, CO.varma.pacf,nrow=2,ncol=1)
+```
+Looking at the ACF and PACF plots, the VARMA model is also the least similar to the original data's autocorrelation as well. While the PACF plots display relatively similar behavior, the ACF plot behavior is much different in the observations compared to the model. The model displays sinusoidal decay spanning across positive and negative values, whereas the orignal data is also slightly sinusoidal but all values are positive. The PACF plots also differ in the sense that the original data does have some significant lags, but the model has no lags that extend beyond the significance line.
+
+```{r}
+# (Hint: Use the function ‘cor(df)’ where df is a dataframe of observed or simulated pollutant concentrations)
+air.df <- data.frame(CO=as.matrix(CO.ts), NO2=as.matrix(NO2.ts))
+
+air.model.df <- data.frame(CO= var.sim$series[,1], NO2= var.sim$series[,2])
+
+cor(air.df)
+cor(air.model.df)
+```
+Finally, we can compare the cross-correlations between the two models. As we can see based on the matrices above, the VARMA produces a much higher cross-correlation than the univariate models, with a correlation of 0.7. Based on this metric, the VARMA model performs much better than the univariate models, as it is able to model the correlation of the original data much better.
+
+
+
+
