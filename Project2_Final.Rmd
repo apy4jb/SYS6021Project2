@@ -13,8 +13,8 @@ output:
 ## Setup
 ```{r setup, include=FALSE}
 require("knitr")
-datadir <- "/Users/leajih-vieira/Documents/GitHub/SYS6021Project2"
-sourcedir <-"/Users/leajih-vieira/Downloads/UVA Grad/SYS 6021"
+datadir <- "/Users/mitchellwhalen/Library/CloudStorage/GoogleDrive-maw9byk@virginia.edu/My Drive/UVA Fall 2023/Statistical Modeling/HW/AirQualityUCI"
+sourcedir <- "/Users/mitchellwhalen/Library/CloudStorage/GoogleDrive-maw9byk@virginia.edu/My Drive/UVA Fall 2023/Statistical Modeling/In Class/R Code"
 opts_knit$set(root.dir = sourcedir)
 library(forecast)
 library(mtsdi)
@@ -355,26 +355,28 @@ NO2.ts<-ts(NO2_AQ)
 
 #### Modeling Trend
 ```{r}
+# renaming variables
+dailyAQ$CO <- dailyAQ$CO.GT.
+dailyAQ$NO2 <- dailyAQ$NO2.GT.
+
 # Create a time index
 time.air <- c(1:(length(CO.ts)))
 
 # Create linear model
 CO.lm <- lm(CO.ts[time.air] ~ time.air)
 summary(CO.lm)
-# FIX
-# ggplot(dailyAQ, aes(x = time.air, y = CO)) +
-#   geom_line() +
-#   geom_smooth(method = "lm", col = "red", se = FALSE) +
-#   labs(x = "Time", y = "CO Values", title = "CO Time Series with Fitted Trend")
+ggplot(dailyAQ, aes(x = time.air, y = CO)) +
+   geom_line() +
+   geom_smooth(method = "lm", col = "red", se = FALSE) +
+   labs(x = "Time", y = "CO Values", title = "CO Time Series with Fitted Trend")
 
 NO2.lm <- lm(NO2.ts[time.air] ~ time.air)
 summary(NO2.lm)
-# FIX
-# ggplot(dailyAQ, aes(x = time.air, y = NO2)) +
-#   geom_line() +
-#   geom_smooth(method = "lm", col = "red", se = FALSE) +
-#   labs(x = "Time", y = "NO2 Values", 
- #       title = "NO2 Time Series with Fitted Trend")
+ggplot(dailyAQ, aes(x = time.air, y = NO2)) +
+   geom_line() +
+   geom_smooth(method = "lm", col = "red", se = FALSE) +
+   labs(x = "Time", y = "NO2 Values", 
+   title = "NO2 Time Series with Fitted Trend")
 
 ```
 We can see a significant positive trend with both variables (especially NO2). In both models we used "time.air" or the time to predict the value. For the CO model we got a p-value of 0.003 and an adjusted R^2 of 0.020. For the NO2 model we got a p-value of < 2.2e-16 and an adjusted R^2 0.300.
@@ -393,19 +395,17 @@ CO_season.lm <- lm(CO.ts[time.air] ~ time.air + sin(2*pi*time.air/12) +
                      cos(2*pi*time.air/12))
 summary(CO_season.lm)
 
-# FIX
-# ggplot(dailyAQ, aes(x=time.air,y=CO)) + geom_line() + 
-#   geom_line(aes(x=time.air,y=CO_season.lm$fitted.values),color="red") +
-#   xlab("Time") + ylab("CO Values")
+ggplot(dailyAQ, aes(x=time.air,y=CO)) + geom_line() + 
+   geom_line(aes(x=time.air,y=CO_season.lm$fitted.values),color="red") +
+   xlab("Time") + ylab("CO Values")
 
 NO2_season.lm <- lm(NO2.ts[time.air] ~ time.air + sin(2*pi*time.air/12) + 
                       cos(2*pi*time.air/12))
 summary(NO2_season.lm)
 
-# FIX
-# ggplot(dailyAQ, aes(x=time.air,y=NO2)) + geom_line() + 
-#   geom_line(aes(x=time.air,y=NO2_season.lm$fitted.values),color="red") +
-#   xlab("Time") + ylab("NO2 Values")
+ggplot(dailyAQ, aes(x=time.air,y=NO2)) + geom_line() + 
+   geom_line(aes(x=time.air,y=NO2_season.lm$fitted.values),color="red") +
+   xlab("Time") + ylab("NO2 Values")
 ```
 We can see that adding a seasonal component does not improve the efficacy of our model. In both models the trend proved to be significant, but neither the sin nor cos component was significant. For the CO model we got a p-value of 0.011 and an adjusted R^2 of 0.021. For the NO2 model we got a p-value of < 2.2e-16 and an adjusted R^2 0.300. The p-values got lower using the seasonal model, whiel the adjusted R^2 remained essentially the same, so we will proceed just using the trend models.
 
@@ -477,8 +477,8 @@ NO2QQ = qplot(sample=varma.model2$residuals[,2]) +
 
 ggarrange(COQQ, NO2QQ, nrow=2, ncol=1)
 
-# independence of residuals
-MTSdiag(varma.model2)
+# More diagnostics
+MTSdiag(varma.model2) # apologies for console output. Wasn't able to not include that while keeping the plots
 ```
 As we look at the residuals v fitted for both CO and NO2, we can see that this model meets our assumption of linearity and randomly distributed residuals. Similarly, looking at the QQ plot we can see a roughly normal distribution of our residuals. Both have slightly fat negative tails and skinny positive tails (more so CO), but overall both distributions are normal enough. As we look at the diagnostic plots looking at our lags, we can see that after lag 6 the lags lack significance. We can see in the Ljung-Box plot that after lag we reject the null hypothesis. Looking at the Cross Correlation Function plots we can see significant lags beginning after lag 6 which means the current model is not fully accounting for the relationship across time between CO and NO2. Therefore, we can conclude that the problems remaining with our selected model is its inability to account for the relationship between CO and NO2 at certain lags beyond 5.
 
